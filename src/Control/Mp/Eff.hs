@@ -104,6 +104,8 @@ import Unsafe.Coerce     (unsafeCoerce)
 import System.IO.Unsafe ( unsafePerformIO )
 import Data.IORef
 
+import Debug.Trace
+
 -- an abstract marker
 data Marker (h:: * -> * -> *) e a = Marker !Integer
 
@@ -216,7 +218,7 @@ instance Monad (Eff e) where
 -- start yielding (with an initially empty continuation)
 {-# INLINE yield #-}
 yield :: Marker h e ans -> ((b -> Eff e ans) -> Eff e ans) -> Eff e' b
-yield m op  = Eff (\ctx -> Control m op pure)
+yield m op  = trace "Yielding" (Eff (\ctx -> Control m op pure))
 
 {-# INLINE kcompose #-}
 kcompose :: (b -> Eff e c) -> (a -> Eff e b) -> a -> Eff e c      -- Kleisli composition
