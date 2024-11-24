@@ -50,8 +50,12 @@ Ningning Xie and Daan Leijen,  Mar 2021.
 
 -}
 module Control.Mp.Eff(
+              Marker
+            , markerExplicit
+            , handlerExplicit
+  
             -- * Effect monad
-              Eff
+            , Eff
             , runEff          -- :: Eff () a -> a
 
             -- * Effect context
@@ -104,6 +108,8 @@ import Unsafe.Coerce     (unsafeCoerce)
 import System.IO.Unsafe ( unsafePerformIO )
 import Data.IORef
 
+import Debug.Trace
+
 -- an abstract marker
 data Marker (h:: * -> * -> *) e a = Marker !Integer
 
@@ -128,6 +134,9 @@ freshMarker f
                writeIORef unique (i+1);
                return i
     in seq m (f (Marker m))
+
+markerExplicit :: Integer -> Marker h e a
+markerExplicit mId = Marker mId
 
 -------------------------------------------------------
 -- The handler context
@@ -178,7 +187,11 @@ lift ctl = Eff (\ctx -> ctl)
 
 {-# INLINE ctxMap #-}
 ctxMap :: (Context e' -> Context e) -> Eff e a -> Eff e' a
-ctxMap f eff = Eff (\ctx -> ctxMapCtl f $ unEff eff (f ctx))
+ctxMap f eff = Eff $
+               traceShow "ctxMap: Storing new unEff function" $
+               (\ctx -> ctxMapCtl f $
+                        traceShow "ctxMap: Ran effectful computation, in different context" $
+                        unEff eff (f ctx))
 
 {-# INLINE ctxMapCtl #-}
 ctxMapCtl :: (Context e' -> Context e) -> Ctl e a -> Ctl e' a
@@ -191,7 +204,7 @@ hideSecond eff = ctxMap (\(CCons m h CTId (CCons m' h' g' ctx)) ->
                              CCons m h (CTCons m' h' g') ctx) eff
 
 under :: In h e => Marker h e' ans -> Context e' -> Eff e' b -> Eff e b
-under m ctx (Eff eff) = Eff (\_ -> case eff ctx of
+under m ctx (Eff eff) = traceShow "under: Under optimization triggered" $ Eff (\_ -> case eff ctx of
                                        Pure x -> Pure x
                                        Control n op cont -> Control n op (resumeUnder m ctx cont))
                                        -- Control n op cont -> Control n op (under m ctx . cont)) -- wrong
@@ -216,23 +229,35 @@ instance Monad (Eff e) where
 -- start yielding (with an initially empty continuation)
 {-# INLINE yield #-}
 yield :: Marker h e ans -> ((b -> Eff e ans) -> Eff e ans) -> Eff e' b
-yield m op  = Eff (\ctx -> Control m op pure)
+yield m op  = Eff $
+              traceShow "yield: Storing new unEff function" $
+              (\ctx -> Control m op pure)
 
 {-# INLINE kcompose #-}
 kcompose :: (b -> Eff e c) -> (a -> Eff e b) -> a -> Eff e c      -- Kleisli composition
 kcompose g f x =
   case f x of
     -- bind (f x) g
-    Eff eff -> Eff (\ctx -> case eff ctx of
-                              Pure x -> unEff (g x) ctx
-                              Control m op cont -> Control m op (g `kcompose` cont))
+    Eff eff -> Eff $
+               traceShow "kcompose: Storing new unEff function" $
+               (\ctx -> case traceShow "kcompose: Ran first part of computation" $
+                             eff ctx of
+                          Pure x -> traceShow "kcompose: Run the composed composed computation" $
+                                    unEff (g x) ctx
+                          Control m op cont -> Control m op (g `kcompose` cont))
 
 {-# INLINE bind #-}
 bind :: Eff e a -> (a -> Eff e b) -> Eff e b
 bind (Eff eff) f
-  = Eff (\ctx -> case eff ctx of
-                   Pure x            -> unEff (f x) ctx
-                   Control m op cont -> Control m op (f `kcompose` cont))  -- keep yielding with an extended continuation
+  = Eff $
+    traceShow "bind: Storing new unEff function" $
+    (\ctx -> case traceShow "Eff bind: Composed continuation is executed" $
+                  traceShow "Eff bind: Run the 'first' part" $
+                  eff ctx of
+               Pure x            -> traceShow "Eff bind: Running the new effectful computation" $
+                                    unEff (f x) ctx
+               Control m op cont -> traceShow "Eff bind: Composing continuation" $
+                                    Control m op (f `kcompose` cont))  -- keep yielding with an extended continuation
 
 instance Functor (Ctl e) where
   fmap  = liftM
@@ -243,32 +268,52 @@ instance Monad (Ctl e) where
   return x      = Pure x
   Pure x >>= f  = f x
   (Control m op cont) >>= f
-    = Control m op (f `kcompose2` cont)
+    = traceShow ("Ctl >>=: Ctl's bind is expanding a operation call of marker:", m) $
+      Control m op (f `kcompose2` cont)
 
 kcompose2 :: (b -> Ctl e c) -> (a -> Eff e b) -> a -> Eff e c
 kcompose2 g f x
-  = Eff $ \ctx -> case unEff (f x) ctx of
-        Pure x -> g x
-        Control m op cont -> Control m op (g `kcompose2` cont)
+  = Eff $
+    traceShow "kcompose2: Storing new unEff function" $
+    (\ctx -> case unEff (f x) ctx of
+               Pure x -> g x
+               Control m op cont -> Control m op (g `kcompose2` cont))
 
 
 -- use a prompt with a unique marker (and handle yields to it)
 {-# INLINE prompt #-}
 prompt :: Marker h e ans -> h e ans -> Eff (h :* e) ans -> Eff e ans
-prompt m h (Eff eff) = Eff $ \ctx ->
-  case (eff (CCons m h CTId ctx)) of                    -- add handler to the context
-    Pure x -> Pure x
-    Control n op cont ->
-        let cont' x = prompt m h (cont x) in      -- extend the continuation with our own prompt
-        case mmatch m n of
-          Nothing   -> Control n op cont'          -- keep yielding (but with the extended continuation)
-          Just Refl -> unEff (op cont') ctx   -- found our prompt, invoke `op` (under the context `ctx`).
-                              -- Note: `Refl` proves `a ~ ans` and `e ~ e'` (the existential `ans,e'` in Control)
+prompt m h (Eff eff) =
+  traceShow "prompt: Calling, which should generate new computation" $
+  Eff $
+  traceShow "bind: Storing new unEff function" $
+  (\ctx ->
+     case traceShow "prompt: Running the given effectful computation" $
+          (eff (CCons m h CTId ctx)) of                    -- add handler to the context
+       Pure x -> traceShow ("Case evaluate to Pure, with marker:", m) $
+                 Pure x
+       Control n op cont -> traceShow ("prompt: Case evaluate to Control, with marker:", m) $
+                            traceShow ("prompt: Case evaluate to Control, the control is referring to marker:", n) $
+                            let cont' x = traceShow "prompt: New continuation genearted in prompt" $
+                                          prompt m h (cont x) -- extend the continuation with our own prompt
+                            in case mmatch m n of
+                              Nothing   -> traceShow "prompt: Markers did not match" $
+                                           Control n op cont'         -- keep yielding (but with the extended continuation)
+                              Just Refl -> traceShow "prompt: Markers matched" $
+                                           unEff (op cont') ctx)   -- found our prompt, invoke `op` (under the context `ctx`).
+                                           -- Note: `Refl` proves `a ~ ans` and `e ~ e'` (the existential `ans,e'` in Control)
 
 {-# INLINE handler #-}
 handler :: h e ans -> Eff (h :* e) ans -> Eff e ans
 handler h action
-  = freshMarker $ \m -> prompt m h action
+  = trace "handler: Calling handler" $ freshMarker $ \m -> traceShow ("handler: New marker is", m) $
+                                                           prompt m h action
+
+-- A handler with explicit id
+{-# INLINE handlerExplicit #-}
+handlerExplicit :: Marker h e ans -> h e ans -> Eff (h :* e) ans -> Eff e ans
+handlerExplicit marker handlerImpl action
+  = prompt marker handlerImpl action
 
 -- Run a control monad
 runEff :: Eff () a -> a
@@ -326,7 +371,7 @@ instance ('False ~ HEqual h h', In h e) => InEq 'False h h' e where
 
 
 {-# INLINE withSubContext #-}
-withSubContext :: (h :? e) => (SubContext h -> Eff e a) -> Eff e a
+withSubContext :: (In h e) => (SubContext h -> Eff e a) -> Eff e a
 withSubContext action
   = do ctx <- Eff Pure
        action (subContext ctx)
@@ -345,8 +390,20 @@ data Op a b e ans = Op { applyOp:: !(forall h e'. In h e' => Marker h e ans -> C
 {-# INLINE perform #-}
 perform :: In h e => (forall e' ans. h e' ans -> Op a b e' ans) -> a -> Eff e b
 perform selectOp x
-  = withSubContext $ \(SubContext (CCons m h g ctx)) ->
-      applyOp (selectOp h) m (applyT g ctx) x
+  = trace "perform: Calling perform" $ withSubContext $ \(SubContext (CCons m h transform ctx)) ->
+                                                          traceShow ("handler: Got handler with marker:", m) $
+                                                          (applyOp (selectOp h))
+                                                          m
+                                                          (applyT transform ctx)
+                                                          x
+
+-- performExplicit :: In h e => Marker h e ans -> (forall e' ans. h e' ans -> Op a b e' ans) -> a -> Eff e b
+-- performExplicit marker selectOp x
+--   = withSubContext $ \(SubContext (CCons m h transform ctx)) ->
+--                        case mmatch marker m of
+--                          Just Refl -> (applyOp (selectOp h)) marker (applyT transform ctx) x
+--                          Nothing -> error "Something has gone wrong"
+
 
 -- | Create an operation that always resumes with a constant value (of type @a@).
 -- (see also the `perform` example).
@@ -428,7 +485,9 @@ localModify f = perform lmodify f
 -- A special prompt that saves and restores state per resumption
 mpromptIORef :: IORef a -> Eff e b -> Eff e b
 mpromptIORef r action
-  = Eff $ \ctx -> case (unEff action ctx) of
+  = Eff $
+    traceShow "bind: Storing new unEff function" $
+    \ctx -> case (unEff action ctx) of
       p@(Pure _) -> p
       Control m op cont
         -> do val <- unEff (unsafeIO (readIORef r)) ctx                     -- save current value on yielding

@@ -9,23 +9,23 @@ data Reader a e ans = Reader{ ask :: Op () a e ans }
 data MyEff e ans = MyEff { op1 :: Op Int Int e ans }
 
 greet :: (Reader String :? e) => Eff e String
-greet = do s <- trace "Performing ask" (perform ask ())
-           return (trace "Returning from greet" ("hello " ++ s))
+greet = do s <- (perform ask ())
+           return ("hello " ++ s)
 
 test :: Int
 test = runEff $
        handler (Reader{ ask = value "world" }) $  -- @:: Reader String () Int@
-       do s <- trace "Calling greet" greet                              -- executes in context @:: `Eff` (Reader String `:*` ()) Int@
-          return (trace "Returning from main" (length s))
+       do s <- greet                              -- executes in context @:: `Eff` (Reader String `:*` ()) Int@
+          return (length s)
 
-f :: (MyEff :? e) => Int -> Eff e Int
-f = \x -> do xAdd1 <- perform op1 x
+g :: (MyEff :? e) => Int -> Eff e Int
+g = \x -> do xAdd1 <- perform op1 x
              return xAdd1
 
 test2 = runEff $
         handler (MyEff { op1 = operation (\arg k -> k (arg + 1)) }) $
         do arg <- perform op1 10
-           f arg
+           g arg
 
 test3 = runEff $
         handler (MyEff { op1 = operation (\arg k -> k (arg + 1)) }) $
@@ -44,10 +44,22 @@ test4 = runEff $
 
 test5 = runEff $
         handler (MyEff { op1 = operation (\arg k -> k 0) }) $
-        -- justApply = \f -> handle {f () } with { op1 ... }
+        -- justApply = \f -> handle { f () } with { op1 ... }
         do justApply <- return (\f -> handler (MyEff { op1 = operation (\arg k -> k 10)}) $ 
                                       do fResult <- f ()
                                          return fResult)
             -- f = \_ -> perform op1 0
            f <- return (\_ -> perform op1 0)
            justApply f
+
+test6 = runEff $
+        handlerExplicit (markerExplicit 10) (Reader { ask = value "hello" } ) $
+        do s <- (perform ask () :: Eff (Reader [Char] :* ()) [Char])
+           return s
+
+
+test7 = runEff $
+        handler (Reader { ask = value "World" }) $
+        do f <- return (\_ -> do result <- (perform ask () :: Eff (Reader [Char] :* ()) [Char])
+                                 return result)
+           f ()
