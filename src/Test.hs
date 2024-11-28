@@ -6,7 +6,7 @@ import Debug.Trace
 -- A @Reader@ effect definition with one operation @ask@ of type @()@ to @a@.
 data Reader a e ans = Reader{ ask :: Op () a e ans }
 
-data MyEff e ans = MyEff { op1 :: Op Int Int e ans }
+data MyEff e ans = MyEff { myOp :: Op Int Int e ans }
 
 greet :: (Reader String :? e) => Eff e String
 greet = do s <- (perform ask ())
@@ -18,48 +18,64 @@ test = runEff $
        do s <- greet                              -- executes in context @:: `Eff` (Reader String `:*` ()) Int@
           return (length s)
 
-g :: (MyEff :? e) => Int -> Eff e Int
-g = \x -> do xAdd1 <- perform op1 x
-             return xAdd1
+doOpOnInput :: (MyEff :? e) => Int -> Eff e Int
+doOpOnInput = \x -> do xAfterOp <- perform myOp x
+                       return xAfterOp
 
-test2 = runEff $
-        handler (MyEff { op1 = operation (\arg k -> k (arg + 1)) }) $
-        do arg <- perform op1 10
-           g arg
+callDoOpOnInput = runEff $
+                  handler (MyEff { myOp = operation (\arg k -> k (arg + 1)) }) $
+                  do doOpOnInput 42
 
-test3 = runEff $
-        handler (MyEff { op1 = operation (\arg k -> k (arg + 1)) }) $
-        do f <- return (\x -> do xAdd1 <- perform op1 x
-                                 return xAdd1)
-           arg <- perform op1 10
-           f arg
+callDoOpOnOpArg = runEff $
+                  handler (MyEff { myOp = operation (\arg k -> k (arg + 1)) }) $
+                  do arg <- perform myOp 42
+                     doOpOnInput arg                     
 
-test4 = runEff $
-        handler (MyEff { op1 = operation (\arg k -> k (arg + 1)) }) $
-        do f <- return (\x -> handler (MyEff { op1 = operation (\arg k -> k (arg + 10)) }) $
-                              do x' <- perform op1 x
-                                 return x')
-           arg <- perform op1 0
-           f arg
+localFunction = runEff $
+                handler (MyEff { myOp = operation (\arg k -> k (arg + 1)) }) $
+                do f <- return (\x -> do opWithInput <- perform myOp x
+                                         return opWithInput)
+                   f 42
 
-test5 = runEff $
-        handler (MyEff { op1 = operation (\arg k -> k 0) }) $
-        -- justApply = \f -> handle { f () } with { op1 ... }
-        do justApply <- return (\f -> handler (MyEff { op1 = operation (\arg k -> k 10)}) $ 
+localFunctionWithOpArg = runEff $
+                         handler (MyEff { myOp = operation (\arg k -> k (arg + 1)) }) $
+                         do f <- return (\x -> do opWithInput <- perform myOp x
+                                                  return opWithInput)
+                            arg <- perform myOp 42
+                            f arg 
+
+eachHandlesOnce = runEff $
+                  handler (MyEff { myOp = operation (\arg k -> k (arg + 1)) }) $
+                  do f <- return (\x -> handler (MyEff { myOp = operation (\arg k -> k (arg + 100)) }) $
+                                        do x' <- perform myOp x
+                                           return x')
+                     arg <- perform myOp 42
+                     f arg
+
+suspendedOperation = runEff $
+                     handler (MyEff { myOp = operation (\arg k -> k 1) }) $
+
+                     do justApply <- return (\f -> handler (MyEff { myOp = operation (\arg k -> k 100)}) $ 
+                                              do fResult <- f ()
+                                                 return fResult)
+                        f <- return (\_ -> perform myOp 42)
+                        justApply f
+
+explicitHandlerExplicitOperation = runEff $
+                                   handlerExplicit (markerExplicit 1) (MyEff { myOp = operation (\arg k -> k (arg + 1)) } ) $
+                                   do res <- performExplicit (markerExplicit 1) myOp 42 
+                                      return res
+
+explicitHandlerDynamicOperation = runEff $
+                                  handlerExplicit (markerExplicit 1) (MyEff { myOp = operation (\arg k -> k (arg + 1)) }) $
+                                  do res <- perform myOp 42
+                                     return res
+
+test' = runEff $
+        handlerExplicit (markerExplicit 10) (MyEff { myOp = operation (\arg k -> k 1) }) $
+
+        do justApply <- return (\f -> handlerExplicit (markerExplicit 20) (MyEff { myOp = operation (\arg k -> k 100)}) $ 
                                       do fResult <- f ()
                                          return fResult)
-            -- f = \_ -> perform op1 0
-           f <- return (\_ -> perform op1 0)
+           f <- return (\_ -> performExplicit (markerExplicit 10) myOp 42)
            justApply f
-
-test6 = runEff $
-        handlerExplicit (markerExplicit 10) (Reader { ask = value "hello" } ) $
-        do s <- (perform ask () :: Eff (Reader [Char] :* ()) [Char])
-           return s
-
-
-test7 = runEff $
-        handler (Reader { ask = value "World" }) $
-        do f <- return (\_ -> do result <- (perform ask () :: Eff (Reader [Char] :* ()) [Char])
-                                 return result)
-           f ()

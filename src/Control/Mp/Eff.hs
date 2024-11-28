@@ -53,6 +53,7 @@ module Control.Mp.Eff(
               Marker
             , markerExplicit
             , handlerExplicit
+            , performExplicit
   
             -- * Effect monad
             , Eff
@@ -392,18 +393,21 @@ perform :: In h e => (forall e' ans. h e' ans -> Op a b e' ans) -> a -> Eff e b
 perform selectOp x
   = trace "perform: Calling perform" $ withSubContext $ \(SubContext (CCons m h transform ctx)) ->
                                                           traceShow ("handler: Got handler with marker:", m) $
-                                                          (applyOp (selectOp h))
-                                                          m
-                                                          (applyT transform ctx)
-                                                          x
+                                                          (applyOp (selectOp h)) m (applyT transform ctx) x
 
--- performExplicit :: In h e => Marker h e ans -> (forall e' ans. h e' ans -> Op a b e' ans) -> a -> Eff e b
--- performExplicit marker selectOp x
---   = withSubContext $ \(SubContext (CCons m h transform ctx)) ->
---                        case mmatch marker m of
---                          Just Refl -> (applyOp (selectOp h)) marker (applyT transform ctx) x
---                          Nothing -> error "Something has gone wrong"
+getHandlerByMarker :: Marker h e ans -> Context e' -> (Marker h e ans, h e ans)
+getHandlerByMarker _ CNil = error "getHandlerByMarker: No handler found"
+getHandlerByMarker m (CCons m' hImpl trans subCtx) =
+  case mmatch m m' of
+    Nothing -> getHandlerByMarker m subCtx
+    Just Refl -> (m', hImpl)
 
+performExplicit :: In h e => Marker h e ans -> (forall e' ans . (h e' ans) -> Op a b e' ans) -> a -> Eff e b
+performExplicit m selectOp x
+  = Eff $
+    (\ctx -> let (m', hImpl) = getHandlerByMarker m ctx
+                 newCtxToComp = (applyOp (selectOp hImpl)) m' ctx x
+             in (unEff newCtxToComp) ctx)
 
 -- | Create an operation that always resumes with a constant value (of type @a@).
 -- (see also the `perform` example).
