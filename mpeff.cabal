@@ -4,7 +4,7 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: b8ecf1544cc419d434acb5067f25bfdb4ba919f6db167c0d989bd35945ae61ee
+-- hash: 46e1c0635e4e8d45f62f6c621d3f7e5157f07e6bb03c7d2a6da45e221d7b7fe7
 
 name:           mpeff
 version:        0.1.0.0
@@ -31,6 +31,9 @@ library
   exposed-modules:
       Control.Mp.Eff
       Control.Mp.Util
+      MyEff
+      Test
+      Test_MyEff
   other-modules:
       Paths_mpeff
   hs-source-dirs:
