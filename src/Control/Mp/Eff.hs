@@ -67,24 +67,24 @@ module Control.Mp.Eff(
             -- * Perform and Handlers
             , perform         -- :: (h :? e) => (forall e' ans. h e' ans -> Op a b e' ans) -> a -> Eff e b
             , handler         -- :: h e ans -> Eff (h :* e) ans -> Eff e ans
-            , handlerRet      -- :: (ans -> b) -> h e b -> Eff (h :* e) ans -> Eff e b
-            , handlerHide     -- :: h (h' :* e) ans -> Eff (h :* e) ans -> Eff (h' :* e) ans
-            , mask            -- :: Eff e ans -> Eff (h :* e) ans
+            -- , handlerRet      -- :: (ans -> b) -> h e b -> Eff (h :* e) ans -> Eff e b
+            -- , handlerHide     -- :: h (h' :* e) ans -> Eff (h :* e) ans -> Eff (h' :* e) ans
+            -- , mask            -- :: Eff e ans -> Eff (h :* e) ans
 
             -- * Defining operations
             , Op
-            , value           -- :: a -> Op () a e ans
-            , function        -- :: (a -> Eff e b) -> Op a b e ans
-            , except          -- :: (a -> Eff e ans) -> Op a b e ans
+            -- , value           -- :: a -> Op () a e ans
+            -- , function        -- :: (a -> Eff e b) -> Op a b e ans
+            -- , except          -- :: (a -> Eff e ans) -> Op a b e ans
             , operation       -- :: (a -> (b -> Eff e ans)) -> Op a b e ans
 
             -- * Local state
             , Local           -- Local a e ans
 
-            , local           -- :: a -> Eff (Local a :* e) ans -> Eff e ans
-            , localRet        -- :: a -> (ans -> a -> b) -> Eff (Local a :* e) ans -> Eff e b
-            , handlerLocal    -- :: a -> h (Local a :* e) ans -> Eff (h :* e) ans -> Eff e ans
-            , handlerLocalRet -- :: a -> (ans -> a -> b) -> h (Local a :* e) b -> Eff (h :* e) ans -> Eff e b
+            -- , local           -- :: a -> Eff (Local a :* e) ans -> Eff e ans
+            -- , localRet        -- :: a -> (ans -> a -> b) -> Eff (Local a :* e) ans -> Eff e b
+            -- , handlerLocal    -- :: a -> h (Local a :* e) ans -> Eff (h :* e) ans -> Eff e ans
+            -- , handlerLocalRet -- :: a -> (ans -> a -> b) -> h (Local a :* e) b -> Eff (h :* e) ans -> Eff e b
 
             , lget            -- :: (Local a :? e) => Eff e a
             , lput            -- :: (Local a :? e) => a -> Eff e ()
@@ -305,10 +305,10 @@ prompt m h (Eff eff) =
                                            -- Note: `Refl` proves `a ~ ans` and `e ~ e'` (the existential `ans,e'` in Control)
 
 {-# INLINE handler #-}
-handler :: h e ans -> Eff (h :* e) ans -> Eff e ans
+handler :: h e ans -> (Marker h e ans -> Eff (h :* e) ans) -> Eff e ans
 handler h action
   = trace "handler: Calling handler" $ freshMarker $ \m -> traceShow ("handler: New marker is", m) $
-                                                           prompt m h action
+                                                           prompt m h (action m)
 
 -- A handler with explicit id
 {-# INLINE handlerExplicit #-}
@@ -322,25 +322,25 @@ runEff (Eff eff) = case eff CNil of
                    Pure x -> x
                    Control _ _ _ -> error "Unhandled operation"  -- can never happen
 
-{-# INLINE handlerRet #-}
-handlerRet :: (ans -> a) -> h e a -> Eff (h :* e) ans -> Eff e a
-handlerRet ret h action
-  = handler h (do x <- action; return (ret x))
+-- {-# INLINE handlerRet #-}
+-- handlerRet :: (ans -> a) -> h e a -> Eff (h :* e) ans -> Eff e a
+-- handlerRet ret h action
+--   = handler h (do x <- action; return (ret x))
 
-{-# INLINE handlerHide #-}
-handlerHide :: h (h' :* e) ans -> Eff (h :* e) ans -> Eff (h' :* e) ans
-handlerHide h action
-  = handler h (hideSecond action)
+-- {-# INLINE handlerHide #-}
+-- handlerHide :: h (h' :* e) ans -> Eff (h :* e) ans -> Eff (h' :* e) ans
+-- handlerHide h action
+--   = handler h (hideSecond action)
 
-{-# INLINE handlerHideRetEff #-}
-handlerHideRetEff :: (ans -> Eff (h' :* e) b) -> h (h' :* e) b -> Eff (h :* e) ans -> Eff (h' :* e) b
-handlerHideRetEff ret h action
-  = handler h (do x <- hideSecond action; mask (ret x))
+-- {-# INLINE handlerHideRetEff #-}
+-- handlerHideRetEff :: (ans -> Eff (h' :* e) b) -> h (h' :* e) b -> Eff (h :* e) ans -> Eff (h' :* e) b
+-- handlerHideRetEff ret h action
+--   = handler h (do x <- hideSecond action; mask (ret x))
 
--- | Mask the top effect handler in the give action (i.e. if a operation is performed
--- on an @h@ effect inside @e@ the top handler is ignored).
-mask :: Eff e ans -> Eff (h :* e) ans
-mask eff = ctxMap ctail eff
+-- -- | Mask the top effect handler in the give action (i.e. if a operation is performed
+-- -- on an @h@ effect inside @e@ the top handler is ignored).
+-- mask :: Eff e ans -> Eff (h :* e) ans
+-- mask eff = ctxMap ctail eff
 
 
 ---------------------------------------------------------
@@ -395,31 +395,34 @@ perform selectOp x
                                                           traceShow ("handler: Got handler with marker:", m) $
                                                           (applyOp (selectOp h)) m (applyT transform ctx) x
 
-getHandlerByMarker :: Marker h e ans -> Context e' -> (Marker h e ans, h e ans)
+getHandlerByMarker :: Marker h e ans -> Context e' -> (Marker h e' ans, h e' ans)
 getHandlerByMarker _ CNil = error "getHandlerByMarker: No handler found"
 getHandlerByMarker m (CCons m' hImpl trans subCtx) =
   case mmatch m m' of
-    Nothing -> getHandlerByMarker m subCtx
-    Just Refl -> (m', hImpl)
+    Nothing -> unsafeCoerce $ getHandlerByMarker m subCtx
+    Just Refl -> unsafeCoerce $ (m', hImpl)
 
-performExplicit :: In h e => Marker h e ans -> (forall e' ans . (h e' ans) -> Op a b e' ans) -> a -> Eff e b
+performExplicit :: In h e'' => Marker h e ans -> (forall e' ans . (h e' ans) -> Op a b e' ans) -> a -> Eff e'' b
 performExplicit m selectOp x
   = Eff $
     (\ctx -> let (m', hImpl) = getHandlerByMarker m ctx
+                 -- The @m'@ here has the type @Marker h e ans@
+                 -- Looking at the type of @Op@, this forces @ctx@ to have the type @Context e@
+                 -- This is annoying, because we need something else
                  newCtxToComp = (applyOp (selectOp hImpl)) m' ctx x
-             in (unEff newCtxToComp) ctx)
+             in (unEff newCtxToComp) ctx) 
 
--- | Create an operation that always resumes with a constant value (of type @a@).
--- (see also the `perform` example).
-value :: a -> Op () a e ans
-value x = function (\() -> return x)
+-- -- | Create an operation that always resumes with a constant value (of type @a@).
+-- -- (see also the `perform` example).
+-- value :: a -> Op () a e ans
+-- value x = function (\() -> return x)
 
--- | Create an operation that takes an argument of type @a@ and always resumes with a result of type @b@.
--- These are called /tail-resumptive/ operations and are implemented more efficient than
--- general operations as they can execute /in-place/ (instead of yielding to the handler).
--- Most operations are tail-resumptive. (See also the `handlerLocal` example).
-function :: (a -> Eff e b) -> Op a b e ans
-function f = Op (\m ctx x -> under m ctx (f x))
+-- -- | Create an operation that takes an argument of type @a@ and always resumes with a result of type @b@.
+-- -- These are called /tail-resumptive/ operations and are implemented more efficient than
+-- -- general operations as they can execute /in-place/ (instead of yielding to the handler).
+-- -- Most operations are tail-resumptive. (See also the `handlerLocal` example).
+-- function :: (a -> Eff e b) -> Op a b e ans
+-- function f = Op (\m ctx x -> under m ctx (f x))
 
 -- | Create an fully general operation from type @a@ to @b@.
 -- the function @f@ takes the argument, and a /resumption/ function of type @b -> `Eff` e ans@
@@ -441,10 +444,10 @@ operation :: (a -> (b -> Eff e ans) -> Eff e ans) -> Op a b e ans
 operation f = Op (\m ctx x -> yield m (\ctlk -> f x ctlk))
 
 
--- | Create an operation that never resumes (an exception).
--- (See `handlerRet` for an example).
-except :: (a -> Eff e ans) -> Op a b e ans
-except f = Op (\m ctx x -> yield m (\ctlk -> f x))
+-- -- | Create an operation that never resumes (an exception).
+-- -- (See `handlerRet` for an example).
+-- except :: (a -> Eff e ans) -> Op a b e ans
+-- except f = Op (\m ctx x -> yield m (\ctlk -> f x))
 
 --------------------------------------------------------------------------------
 -- Efficient (and safe) Local state handler
@@ -507,47 +510,47 @@ unsafePromptIORef init action
     do r <- unsafeIO (newIORef init)
        mpromptIORef r (action m r)
 
--- | Create a local state handler with an initial state of type @a@,
--- with a return function to combine the final result with the final state to a value of type @b@.
-{-# INLINE localRet #-}
-localRet :: a -> (ans -> a -> b) -> Eff (Local a :* e) ans -> Eff e b
-localRet init ret action
-  = unsafePromptIORef init $ \m r ->  -- set a fresh prompt with marker `m`
-        do x <- ctxMap (\ctx -> CCons m (Local r) CTId ctx) action -- and call action with the extra evidence
-           y <- unsafeIO (readIORef r)
-           return (ret x y)
+-- -- | Create a local state handler with an initial state of type @a@,
+-- -- with a return function to combine the final result with the final state to a value of type @b@.
+-- {-# INLINE localRet #-}
+-- localRet :: a -> (ans -> a -> b) -> Eff (Local a :* e) ans -> Eff e b
+-- localRet init ret action
+--   = unsafePromptIORef init $ \m r ->  -- set a fresh prompt with marker `m`
+--         do x <- ctxMap (\ctx -> CCons m (Local r) CTId ctx) action -- and call action with the extra evidence
+--            y <- unsafeIO (readIORef r)
+--            return (ret x y)
 
--- | Create a local state handler with an initial state of type @a@.
-{-# INLINE local #-}
-local :: a -> Eff (Local a :* e) ans -> Eff e ans
-local init action
-  = localRet init const action
+-- -- | Create a local state handler with an initial state of type @a@.
+-- {-# INLINE local #-}
+-- local :: a -> Eff (Local a :* e) ans -> Eff e ans
+-- local init action
+--   = localRet init const action
 
--- | Create a new handler for @h@ which can access the /locally isolated state/ @`Local` a@.
--- This is fully local to the handler @h@ only and not visible in the @action@ as
--- apparent from its effect context (which does /not/ contain @`Local` a@). The
--- @ret@ argument can be used to transform the final result combined with the final state.
-{-# INLINE handlerLocalRet #-}
-handlerLocalRet :: a -> (ans -> a -> b) -> (h (Local a :* e) b) -> Eff (h :* e) ans -> Eff e b
-handlerLocalRet init ret h action
-  = local init $ handlerHideRetEff (\x -> do{ y <- localGet; return (ret x y)}) h action
+-- -- | Create a new handler for @h@ which can access the /locally isolated state/ @`Local` a@.
+-- -- This is fully local to the handler @h@ only and not visible in the @action@ as
+-- -- apparent from its effect context (which does /not/ contain @`Local` a@). The
+-- -- @ret@ argument can be used to transform the final result combined with the final state.
+-- {-# INLINE handlerLocalRet #-}
+-- handlerLocalRet :: a -> (ans -> a -> b) -> (h (Local a :* e) b) -> Eff (h :* e) ans -> Eff e b
+-- handlerLocalRet init ret h action
+--   = local init $ handlerHideRetEff (\x -> do{ y <- localGet; return (ret x y)}) h action
 
--- | Create a new handler for @h@ which can access the /locally isolated state/ @`Local` a@.
--- This is fully local to the handler @h@ only and not visible in the @action@ as
--- apparent from its effect context (which does /not/ contain @`Local` a@).
---
--- @
--- data State a e ans = State { get :: `Op` () a e ans, put :: `Op` a () e ans  }
---
--- state :: a -> `Eff` (State a `:*` e) ans -> `Eff` e ans
--- state init = `handlerLocal` init (State{ get = `function` (\\_ -> `perform` `lget` ()),
---                                        put = `function` (\\x -> `perform` `lput` x) })
---
--- test = `runEff` $
---        state (41::Int) $
---        inc                -- see `:?`
--- @
-{-# INLINE handlerLocal #-}
-handlerLocal :: a -> (h (Local a :* e) ans) -> Eff (h :* e) ans -> Eff e ans
-handlerLocal init h action
-  = local init (handlerHide h action)
+-- -- | Create a new handler for @h@ which can access the /locally isolated state/ @`Local` a@.
+-- -- This is fully local to the handler @h@ only and not visible in the @action@ as
+-- -- apparent from its effect context (which does /not/ contain @`Local` a@).
+-- --
+-- -- @
+-- -- data State a e ans = State { get :: `Op` () a e ans, put :: `Op` a () e ans  }
+-- --
+-- -- state :: a -> `Eff` (State a `:*` e) ans -> `Eff` e ans
+-- -- state init = `handlerLocal` init (State{ get = `function` (\\_ -> `perform` `lget` ()),
+-- --                                        put = `function` (\\x -> `perform` `lput` x) })
+-- --
+-- -- test = `runEff` $
+-- --        state (41::Int) $
+-- --        inc                -- see `:?`
+-- -- @
+-- {-# INLINE handlerLocal #-}
+-- handlerLocal :: a -> (h (Local a :* e) ans) -> Eff (h :* e) ans -> Eff e ans
+-- handlerLocal init h action
+--   = local init (handlerHide h action)
